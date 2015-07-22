@@ -269,10 +269,10 @@ if (!empty($_GET)) {
                 $rolecache[$role->id]->name = $role->shortname;
             }
 
-            // $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
-            // $fh = fopen($dbf, 'w');
-            // fwrite($fh, print_r($rolecache, true));
-            // fclose($fh);
+            $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
+            $fh = fopen($dbf, 'w');
+            fwrite($fh, print_r($founduser, true));
+            fclose($fh);
 
             foreach ($filecolumns as $column) {
                 if (!preg_match('/^course\d+$/', $column)) {
