@@ -198,45 +198,244 @@ if (!empty($_GET)) {
 
 		}
 
+        $count = 0;
+        require_once($CFG->libdir.'/csvlib.class.php');
+        require_once($CFG->dirroot.'/group/lib.php');
+        require_once($CFG->dirroot.'/cohort/lib.php');
+        $fs = get_file_storage();
+        $files = $DB->get_records('files', array('component' => 'local_usermapping'));
+        foreach ($files as $file) {
+            if ($file->filename == '.') {
+                continue;
+            }
+            $fileinfo = (array) $file;
+            $storedfile = $fs->get_file($fileinfo['contextid'], $fileinfo['component'], $fileinfo['filearea'],
+                      $fileinfo['itemid'], $fileinfo['filepath'], $fileinfo['filename']);
+
+            $count++;
+            $csvcontent =  $storedfile->get_content();
+            $iid = csv_import_reader::get_new_iid('userfile' . $count);
+            $cir = new csv_import_reader($iid, 'userfile' . $count);
+            
+            $readcount = $cir->load_csv_content($csvcontent, 'utf8', ',');
+            $columns = $cir->get_columns();
+
+
+
+            $filecolumns = array();
+            foreach ($columns as $key=>$unused) {
+                $field = $columns[$key];
+                $lcfield = core_text::strtolower($field);
+                $filecolumns[$key] = $lcfield;
+            }
+
+            $users = array();
+            $cir->init();
+            $founduser = false;
+            while ($line = $cir->next()) {
+                $spuser = new Object;
+
+                foreach ($line as $keynum => $value) {
+                    if (!isset($filecolumns[$keynum])) {
+                        // this should not happen
+                        continue;
+                    }
+                    $key = $filecolumns[$keynum];
+                    $spuser->$key = $value;
+                }
+                if ($spuser->username == $user->username) {
+                    $founduser = clone($spuser);
+                    $founduser->id = $user->id;
+                }
+            }
+
+
+            $manualcache = array();
+            $ccache = array();
+            $rolecache = array();
+
+            if (enrol_is_enabled('manual')) {
+                $manual = enrol_get_plugin('manual');
+            } else {
+                $manual = NULL;
+            }
+            $today = time();
+            $today = make_timestamp(date('Y', $today), date('m', $today), date('d', $today), 0, 0, 0);
+
+            $allowedroles = $DB->get_records('role');
+            foreach ($allowedroles as $role) {
+                $rolecache[$role->id] = new stdClass();
+                $rolecache[$role->id]->id   = $role->id;
+                $rolecache[$role->id]->name = $role->shortname;
+            }
+
+            // $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
+            // $fh = fopen($dbf, 'w');
+            // fwrite($fh, print_r($rolecache, true));
+            // fclose($fh);
+
+            foreach ($filecolumns as $column) {
+                if (!preg_match('/^course\d+$/', $column)) {
+                    continue;
+                }
+                $i = substr($column, 6);
+
+                if (empty($founduser->{'course'.$i})) {
+                    continue;
+                }
+                $shortname = $founduser->{'course'.$i};
+                if (!array_key_exists($shortname, $ccache)) {
+                    if (!$course = $DB->get_record('course', array('shortname'=>$shortname), 'id, shortname')) {
+                        $upt->track('enrolments', get_string('unknowncourse', 'error', s($shortname)), 'error');
+                        continue;
+                    }
+                    $ccache[$shortname] = $course;
+                    $ccache[$shortname]->groups = null;
+                }
+                $courseid      = $ccache[$shortname]->id;
+                $coursecontext = context_course::instance($courseid);
+                if (!isset($manualcache[$courseid])) {
+                    $manualcache[$courseid] = false;
+                    if ($manual) {
+                        if ($instances = enrol_get_instances($courseid, false)) {
+                            foreach ($instances as $instance) {
+                                if ($instance->enrol === 'manual') {
+                                    $manualcache[$courseid] = $instance;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ($manual and $manualcache[$courseid]) {
+
+                    // find role
+                    $rid = false;
+                    if (!empty($founduser->{'role'.$i})) {
+                        $rid = $founduser->{'role'.$i};
+                    }
+                    if ($rid) {
+                        // Find duration and/or enrol status.
+                        $timeend = 0;
+                        $status = null;
+
+                        if (isset($founduser->{'enrolstatus'.$i})) {
+                            $enrolstatus = $founduser->{'enrolstatus'.$i};
+                            if ($enrolstatus == '') {
+                                $status = null;
+                            } else if ($enrolstatus === (string)ENROL_USER_ACTIVE) {
+                                $status = ENROL_USER_ACTIVE;
+                            } else if ($enrolstatus === (string)ENROL_USER_SUSPENDED) {
+                                $status = ENROL_USER_SUSPENDED;
+                            } else {
+                                
+                            }
+                        }
+
+                        if (!empty($founduser->{'enrolperiod'.$i})) {
+                            $duration = (int)$founduser->{'enrolperiod'.$i} * 60*60*24; // convert days to seconds
+                            if ($duration > 0) { // sanity check
+                                $timeend = $today + $duration;
+                            }
+                        } else if ($manualcache[$courseid]->enrolperiod > 0) {
+                            $timeend = $today + $manualcache[$courseid]->enrolperiod;
+                        }
+
+                        $manual->enrol_user($manualcache[$courseid], $founduser->id, $rid, $today, $timeend, $status);
+
+                        $a = new stdClass();
+                        $a->course = $shortname;
+                        $a->role   = $rolecache[$rid]->name;
+                    }
+                }
+
+                // find group to add to
+                if (!empty($founduser->{'group'.$i})) {
+                    // make sure user is enrolled into course before adding into groups
+                    if (!is_enrolled($coursecontext, $founduser->id)) {
+                        continue;
+                    }
+                    //build group cache
+                    if (is_null($ccache[$shortname]->groups)) {
+                        $ccache[$shortname]->groups = array();
+                        if ($groups = groups_get_all_groups($courseid)) {
+                            foreach ($groups as $gid=>$group) {
+                                $ccache[$shortname]->groups[$gid] = new stdClass();
+                                $ccache[$shortname]->groups[$gid]->id   = $gid;
+                                $ccache[$shortname]->groups[$gid]->name = $group->name;
+                                if (!is_numeric($group->name)) { // only non-numeric names are supported!!!
+                                    $ccache[$shortname]->groups[$group->name] = new stdClass();
+                                    $ccache[$shortname]->groups[$group->name]->id   = $gid;
+                                    $ccache[$shortname]->groups[$group->name]->name = $group->name;
+                                }
+                            }
+                        }
+                    }
+                    // group exists?
+                    $addgroup = $founduser->{'group'.$i};
+                    if (!array_key_exists($addgroup, $ccache[$shortname]->groups)) {
+                        // if group doesn't exist,  create it
+                        $newgroupdata = new stdClass();
+                        $newgroupdata->name = $addgroup;
+                        $newgroupdata->courseid = $ccache[$shortname]->id;
+                        $newgroupdata->description = '';
+                        $gid = groups_create_group($newgroupdata);
+                        if ($gid){
+                            $ccache[$shortname]->groups[$addgroup] = new stdClass();
+                            $ccache[$shortname]->groups[$addgroup]->id   = $gid;
+                            $ccache[$shortname]->groups[$addgroup]->name = $newgroupdata->name;
+                        } else {
+                            continue;
+                        }
+                    }
+                    $gid   = $ccache[$shortname]->groups[$addgroup]->id;
+                    $gname = $ccache[$shortname]->groups[$addgroup]->name;
+                }
+            }
+            $cir->close();
+            $cir->cleanup();
+        }
+
 		// if we can find a cohortid matching what we sent in, enrol this user in that cohort by adding a record to cohort_members
-		if (!empty($cohort)) {
-			$ids = explode(',',$cohort);
-			foreach ($ids as $cohort) {
-				if ($DB->record_exists('cohort', array('idnumber'=>$cohort))) {
-			        $cohortrow = $DB->get_record('cohort', array('idnumber'=>$cohort));
-					if (!$DB->record_exists('cohort_members', array('cohortid'=>$cohortrow->id, 'userid'=>$user->id))) {
-						// internally triggers cohort_member_added event
-						cohort_add_member($cohortrow->id, $user->id);
-					}
+		// if (!empty($cohort)) {
+		// 	$ids = explode(',',$cohort);
+		// 	foreach ($ids as $cohort) {
+		// 		if ($DB->record_exists('cohort', array('idnumber'=>$cohort))) {
+		// 	        $cohortrow = $DB->get_record('cohort', array('idnumber'=>$cohort));
+		// 			if (!$DB->record_exists('cohort_members', array('cohortid'=>$cohortrow->id, 'userid'=>$user->id))) {
+		// 				// internally triggers cohort_member_added event
+		// 				cohort_add_member($cohortrow->id, $user->id);
+		// 			}
 					
-					// if the plugin auto-opens the course, then find the course this cohort enrols for and set it as the opener link
-					if (get_config('auth/wp2moodle', 'autoopen') == 'yes')  {
-				        if ($enrolrow = $DB->get_record('enrol', array('enrol'=>'cohort','customint1'=>$cohortrow->id,'status'=>0))) {
-							$SESSION->wantsurl = new moodle_url('/course/view.php', array('id'=>$enrolrow->courseid));
-						}
-					}
-				}
-			}
-		}
+		// 			// if the plugin auto-opens the course, then find the course this cohort enrols for and set it as the opener link
+		// 			if (get_config('auth/wp2moodle', 'autoopen') == 'yes')  {
+		// 		        if ($enrolrow = $DB->get_record('enrol', array('enrol'=>'cohort','customint1'=>$cohortrow->id,'status'=>0))) {
+		// 					$SESSION->wantsurl = new moodle_url('/course/view.php', array('id'=>$enrolrow->courseid));
+		// 				}
+		// 			}
+		// 		}
+		// 	}
+		// }
 
 		// also optionally find a groupid we sent in, enrol this user in that group, and optionally open the course
-		if (!empty($group)) {
-			$ids = explode(',',$group);
-			foreach ($ids as $group) {
-				if ($DB->record_exists('groups', array('idnumber'=>$group))) {
-			        $grouprow = $DB->get_record('groups', array('idnumber'=>$group));
-					if (!$DB->record_exists('groups_members', array('groupid'=>$grouprow->id, 'userid'=>$user->id))) {
-						// internally triggers groups_member_added event
-						groups_add_member($grouprow->id, $user->id); //  not a component ,'enrol_wp2moodle');
-					}
+		// if (!empty($group)) {
+		// 	$ids = explode(',',$group);
+		// 	foreach ($ids as $group) {
+		// 		if ($DB->record_exists('groups', array('idnumber'=>$group))) {
+		// 	        $grouprow = $DB->get_record('groups', array('idnumber'=>$group));
+		// 			if (!$DB->record_exists('groups_members', array('groupid'=>$grouprow->id, 'userid'=>$user->id))) {
+		// 				// internally triggers groups_member_added event
+		// 				groups_add_member($grouprow->id, $user->id); //  not a component ,'enrol_wp2moodle');
+		// 			}
 					
-					// if the plugin auto-opens the course, then find the course this group is for and set it as the opener link
-					if (get_config('auth/wp2moodle', 'autoopen') == 'yes')  {
-						$SESSION->wantsurl = new moodle_url('/course/view.php', array('id'=>$grouprow->courseid));
-					}
-				}
-			}
-		}	
+		// 			// if the plugin auto-opens the course, then find the course this group is for and set it as the opener link
+		// 			if (get_config('auth/wp2moodle', 'autoopen') == 'yes')  {
+		// 				$SESSION->wantsurl = new moodle_url('/course/view.php', array('id'=>$grouprow->courseid));
+		// 			}
+		// 		}
+		// 	}
+		// }	
 		
 		// all that's left to do is to authenticate this user and set up their active session
 	    $authplugin = get_auth_plugin('wp2moodle'); // me!
