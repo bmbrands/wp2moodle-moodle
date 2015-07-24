@@ -170,7 +170,7 @@ if (!empty($_GET)) {
 		        $newuser->city = '';
 		    }
 		    $newuser->auth = $auth;
-			$newuser->policyagreed = 1;
+			$newuser->policyagreed = 0;
 			$newuser->idnumber = $idnumber;
 		    $newuser->username = $username;
 	        $newuser->password = md5($hashedpassword); // manual auth checks password validity, so we need to set a valid password
@@ -220,8 +220,6 @@ if (!empty($_GET)) {
             $readcount = $cir->load_csv_content($csvcontent, 'utf8', ',');
             $columns = $cir->get_columns();
 
-
-
             $filecolumns = array();
             foreach ($columns as $key=>$unused) {
                 $field = $columns[$key];
@@ -269,10 +267,10 @@ if (!empty($_GET)) {
                 $rolecache[$role->id]->name = $role->shortname;
             }
 
-            $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
-            $fh = fopen($dbf, 'w');
-            fwrite($fh, print_r($founduser, true));
-            fclose($fh);
+            // $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
+            // $fh = fopen($dbf, 'w');
+            // fwrite($fh, print_r($founduser, true));
+            // fclose($fh);
 
             foreach ($filecolumns as $column) {
                 if (!preg_match('/^course\d+$/', $column)) {
