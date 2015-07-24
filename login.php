@@ -251,6 +251,7 @@ if (!empty($_GET)) {
             $manualcache = array();
             $ccache = array();
             $rolecache = array();
+            $cohorts = array();
 
             if (enrol_is_enabled('manual')) {
                 $manual = enrol_get_plugin('manual');
@@ -270,7 +271,41 @@ if (!empty($_GET)) {
             // $dbf = $CFG->dataroot . '/temp/' . $file->filename; 
             // $fh = fopen($dbf, 'w');
             // fwrite($fh, print_r($founduser, true));
-            // fclose($fh);
+
+            // add to cohort first, it might trigger enrolments indirectly - do NOT create cohorts here!
+            foreach ($filecolumns as $column) {
+                if (!preg_match('/^cohort\d+$/', $column)) {
+                    continue;
+                }
+
+                if (!empty($founduser->$column)) {
+                    $addcohort = $founduser->$column;
+                    if (!isset($cohorts[$addcohort])) {
+                        if (is_number($addcohort)) {
+                            // only non-numeric idnumbers!
+                            $cohort = $DB->get_record('cohort', array('id'=>$addcohort));
+                        } else {
+                            $cohort = $DB->get_record('cohort', array('idnumber'=>$addcohort));
+                        }
+
+                        if (empty($cohort)) {
+                            $cohorts[$addcohort] = get_string('unknowncohort', 'core_cohort', s($addcohort));
+                        } else if (!empty($cohort->component)) {
+                            // cohorts synchronised with external sources must not be modified!
+                            $cohorts[$addcohort] = get_string('external', 'core_cohort');
+                        } else {
+                            $cohorts[$addcohort] = $cohort;
+                        }
+                    }
+
+                    if (is_object($cohorts[$addcohort])) {
+                        $cohort = $cohorts[$addcohort];
+                        if (!$DB->record_exists('cohort_members', array('cohortid'=>$cohort->id, 'userid'=>$user->id))) {
+                            cohort_add_member($cohort->id, $founduser->id);
+                        }
+                    }
+                }
+            }
 
             foreach ($filecolumns as $column) {
                 if (!preg_match('/^course\d+$/', $column)) {
@@ -282,9 +317,9 @@ if (!empty($_GET)) {
                     continue;
                 }
                 $shortname = $founduser->{'course'.$i};
+                
                 if (!array_key_exists($shortname, $ccache)) {
                     if (!$course = $DB->get_record('course', array('shortname'=>$shortname), 'id, shortname')) {
-                        $upt->track('enrolments', get_string('unknowncourse', 'error', s($shortname)), 'error');
                         continue;
                     }
                     $ccache[$shortname] = $course;
@@ -307,12 +342,17 @@ if (!empty($_GET)) {
                 }
 
                 if ($manual and $manualcache[$courseid]) {
-
+                    //fwrite($fh, 'enrolling in ' . $courseid . "\n");
                     // find role
                     $rid = false;
                     if (!empty($founduser->{'role'.$i})) {
                         $rid = $founduser->{'role'.$i};
                     }
+                    
+                    if (!$rid) {
+                        $rid = $manualcache[$courseid]->roleid;
+                    }
+                    //fwrite($fh, 'roleid in ' . $rid . "\n");
                     if ($rid) {
                         // Find duration and/or enrol status.
                         $timeend = 0;
@@ -393,6 +433,8 @@ if (!empty($_GET)) {
             }
             $cir->close();
             $cir->cleanup();
+
+            //fclose($fh);
         }
 
 		// if we can find a cohortid matching what we sent in, enrol this user in that cohort by adding a record to cohort_members
