@@ -244,6 +244,9 @@ if (!empty($_GET)) {
                 if ($spuser->username == $user->username) {
                     $founduser = clone($spuser);
                     $founduser->id = $user->id;
+                    if (!empty($founduser->city)) {
+                        $DB->set_field('user', 'city', $founduser->city, array('id' => $user->id));
+                    }
                 }
             }
 
