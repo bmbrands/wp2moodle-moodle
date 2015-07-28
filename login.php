@@ -432,7 +432,8 @@ if (!empty($_GET)) {
                     }
                     $gid   = $ccache[$shortname]->groups[$addgroup]->id;
                     $gname = $ccache[$shortname]->groups[$addgroup]->name;
-                    groups_add_member($gid, $user->id);
+                    fwrite($fh, print_r($gid, true));
+                    groups_add_member($gid, $founduser->id);
                 }
             }
             $cir->close();
